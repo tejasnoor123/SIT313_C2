@@ -1,256 +1,195 @@
 
-//useState is hook which is used to store the values entered in the form
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-//creates a new account using email and password
-import { signInWithPopup } from "firebase/auth";
-//getDoc(get a document),setDoc(set a document),doc(document in database)
-import { doc, getDoc, setDoc } from "firebase/firestore";
-//db(database),auth(authorization),googleProvider(google sign in)
-import { db, auth, googleProvider } from "../firebase";
-import { API_BASE_URL } from "../api";
+import { useNavigate, Link } from "react-router-dom";
+import {
+  createUserWithEmailAndPassword,
+  updateProfile,
+} from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { auth, db } from "../firebase";
 
-function Signup() {
-    // Store the values entered in the form
-    //useState is hook which is used to store the values entered in the form
-    const [name, setName] = useState("");
-    const [email, setEmail] = useState("");
-    const [password, setPassword] = useState("");
-    const [confirmPassword, setConfirmPassword] = useState("");
-    const [error, setError] = useState("");
+function SignUp() {
+  const navigate = useNavigate();
 
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
 
-    //used navigate is hook which is used to navigate between javascript code
-    const navigate = useNavigate();
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
 
-    // Save the user's details in localStorage
-    //this function saves the user info in the browser local storage and retrive it when needed
-    const saveUser = (user, userName = "") => {
-        //this stores information under a specific key
-        localStorage.setItem(
-            "dev_deakin_user",
-            //json.stringify is used to convert the object to a string
-            JSON.stringify({
-                // || is used here as a logical OR operator,this means if the first value is not available 
-                // then it will use the second value and if the second value is not available 
-                // then it will use the third value
-                name: userName || user.displayName || user.email,
-                email: user.email,
-                //if photoURL is not available then it will store empty string
-                photoURL: user.photoURL || ""
-            })
-        );
-    };
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim();
 
-    // Create an account using Google
-    const handleGoogleSignIn = async () => {
-        //clear the errors
-        setError("");
+    if (!trimmedName || !trimmedEmail || !password || !confirmPassword) {
+      setError("Please fill in all fields.");
+      return;
+    }
 
-        try {
-            // Open the Google sign-in popup
-            const result = await signInWithPopup(auth, googleProvider);
-            //store the user details in result variable
-            const user = result.user;
+    if (password.length < 6) {
+      setError("Password must contain at least 6 characters.");
+      return;
+    }
 
-            // Check whether the user's profile already exists
-            const userRef = doc(db, "users", user.uid);
-            const userData = await getDoc(userRef);
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
 
-            // Save the profile if this is the user's first time
-            if (!userData.exists()) {
-                await setDoc(userRef, {
-                    name: user.displayName || "",
-                    email: user.email,
-                    photoURL: user.photoURL || "",
-                    //store the date of creation of the user
-                    //toISOString() is used to convert the date to a string in UTC format
-                    createdAt: new Date().toISOString()
-                });
-            }
+    setLoading(true);
 
-            //save the user details in local storage
-            saveUser(user);
-            //navigate to the home page
-            navigate("/");
-        } catch (error) {
-            console.log("Google signup failed", error);
-            setError("Google sign-up failed. Please try again.");
-        }
-    };
+    try {
+      // Create the account directly using Firebase Authentication.
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        trimmedEmail,
+        password
+      );
 
-    // Check the form before creating an account
-    const validateForm = () => {
-        //name.trim() is used to remove the white spaces from the name
-        //split(/\s+/) is used to split the name into an array of words by whitespace
-        //length is used to check the number of words
-        if (name.trim().split(/\s+/).length < 2) {
-            return "Please enter your first and last name.";
-        }
+      const user = userCredential.user;
 
-        // Check whether both passwords match
-        if (password !== confirmPassword) {
-            return "Passwords do not match.";
-        }
+      // Save the user's display name in Firebase Authentication.
+      await updateProfile(user, {
+        displayName: trimmedName,
+      });
 
-        // Firebase requires a password of at least 6 characters
-        if (password.length < 6) {
-            return "Password must be at least 6 characters.";
-        }
+      // Save additional user information in Cloud Firestore.
+      await setDoc(doc(db, "users", user.uid), {
+        uid: user.uid,
+        name: trimmedName,
+        email: trimmedEmail,
+        plan: "free",
+        createdAt: serverTimestamp(),
+      });
 
-        // If all validations pass, return an empty string
-        return "";
-    };
+      setSuccess("Account created successfully!");
 
-    // Handle signup using email and password via Express backend
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setError("");
+      // Change this path if your application uses a different route.
+      navigate("/login");
+    } catch (err) {
+      console.error("Signup error:", err);
 
-        // Check the entered details
-        const message = validateForm();
-        if (message) {
-            setError(message);
-            return;
-        }
+      switch (err.code) {
+        case "auth/email-already-in-use":
+          setError("This email is already registered. Please log in.");
+          break;
 
-        try {
-            // Task D1 Step 1: Send registration details to backend
-            const response = await fetch(`${API_BASE_URL}/register`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    name: name.trim(),
-                    email: email.trim().toLowerCase(),
-                    password
-                })
-            });
+        case "auth/invalid-email":
+          setError("Please enter a valid email address.");
+          break;
 
-            const data = await response.json();
+        case "auth/weak-password":
+          setError("Please choose a stronger password.");
+          break;
 
-            // Task D1 Step 2: If invalid, show message from backend
-            if (!response.ok || !data.success) {
-                setError(data.message || "Registration failed. Please try again.");
-                return;
-            }
+        case "auth/operation-not-allowed":
+          setError(
+            "Email/password sign-in is disabled in your Firebase Console."
+          );
+          break;
 
-            // On success, redirect to login page with success notification
-            navigate("/login", {
-                state: {
-                    message: data.message || "Account created successfully! Please log in."
-                }
-            });
-        } catch (err) {
-            console.error("Signup network error:", err);
-            setError("Unable to connect to the registration server. Please ensure the backend is running on port 3000.");
-        }
-    };
+        case "permission-denied":
+        case "firestore/permission-denied":
+          setError(
+            "Your account was created, but Firestore permissions prevented saving the profile. Check your Firestore security rules."
+          );
+          break;
 
-    return (
-        <div className="auth-page">
-            <div className="auth-card signup-card">
-                <h2 className="signup-title">
-                    Create a DEV@Deakin Account
-                </h2>
+        default:
+          setError(err.message || "Registration failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
-                {/* Show a message if something goes wrong */}
-                {error && (
-                    <div className="error-alert">
-                        {error}
-                    </div>
-                )}
+  return (
+    <div className="signup-container">
+      <form className="signup-form" onSubmit={handleSubmit}>
+        <h2>Create Account</h2>
+        <p>Sign up for DEV@Deakin</p>
 
-                {/* Form for creating an account */}
-                <form onSubmit={handleSubmit} className="auth-form-horizontal">
-                    <div className="form-row">
-                        <label htmlFor="signup-name">Name*</label>
-                        <input
-                            id="signup-name"
-                            type="text"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            placeholder="First and Last name"
-                            required
-                        />
-                    </div>
+        {error && (
+          <div className="error-message" role="alert">
+            {error}
+          </div>
+        )}
 
-                    <div className="form-row">
-                        <label htmlFor="signup-email">Email*</label>
-                        <input
-                            id="signup-email"
-                            type="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="user@example.com"
-                            required
-                        />
-                    </div>
+        {success && (
+          <div className="success-message" role="status">
+            {success}
+          </div>
+        )}
 
-                    <div className="form-row">
-                        <label htmlFor="signup-password">Password*</label>
-                        <input
-                            id="signup-password"
-                            type="password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            placeholder="At least 6 characters"
-                            required
-                        />
-                    </div>
-
-                    <div className="form-row">
-                        <label htmlFor="signup-confirm-password">
-                            Confirm password*
-                        </label>
-                        <input
-                            id="signup-confirm-password"
-                            type="password"
-                            value={confirmPassword}
-                            onChange={(e) => setConfirmPassword(e.target.value)}
-                            placeholder="Re-enter password"
-                            required
-                        />
-                    </div>
-
-                    <div className="form-action-row">
-                        <button type="submit" className="auth-btn">
-                            Create
-                        </button>
-                    </div>
-                </form>
-
-                <div className="auth-divider">
-                    {/* span is used to display the or text between the two buttons */}
-                    <span>or</span>
-                </div>
-
-                {/* Create or access an account using Google */}
-                <button
-                    type="button"
-                    className="google-btn"
-                    onClick={handleGoogleSignIn}
-                >
-                    <div className="google-icon">
-                        <img
-                            src="https://www.google.com/images/branding/googlelogo/1x/googlelogo_color_120x44dp.png"
-                            alt="Google"
-                        />
-                    </div>
-                    Continue with Google
-                </button>
-
-                {/* Link to the login page for existing users */}
-                <div className="auth-footer-hint">
-                    Already have an account?{" "}
-                    <Link to="/login" className="auth-link">
-                        Log in here
-                    </Link>
-                </div>
-            </div>
+        <div className="form-group">
+          <label htmlFor="name">Full Name</label>
+          <input
+            id="name"
+            type="text"
+            placeholder="Enter your full name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoComplete="name"
+            required
+          />
         </div>
-    );
+
+        <div className="form-group">
+          <label htmlFor="email">Email Address</label>
+          <input
+            id="email"
+            type="email"
+            placeholder="Enter your email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="password">Password</label>
+          <input
+            id="password"
+            type="password"
+            placeholder="At least 6 characters"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={6}
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label htmlFor="confirmPassword">Confirm Password</label>
+          <input
+            id="confirmPassword"
+            type="password"
+            placeholder="Re-enter your password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+        </div>
+
+        <button type="submit" disabled={loading}>
+          {loading ? "Creating Account..." : "Sign Up"}
+        </button>
+
+        <p className="login-link">
+          Already have an account? <Link to="/login">Log in</Link>
+        </p>
+      </form>
+    </div>
+  );
 }
 
-export default Signup;
+export default SignUp;

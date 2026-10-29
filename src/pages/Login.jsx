@@ -1,10 +1,18 @@
+
 import { useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { signInWithPopup } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+    signInWithEmailAndPassword,
+    signInWithPopup,
+} from "firebase/auth";
+import {
+    doc,
+    getDoc,
+    setDoc,
+    serverTimestamp,
+} from "firebase/firestore";
 import { auth, db, googleProvider } from "../firebase";
 import { useAuth } from "../context/useAuth";
-import { API_BASE_URL } from "../api";
 
 function Login() {
     const [email, setEmail] = useState("");
@@ -18,87 +26,131 @@ function Login() {
 
     const { login } = useAuth();
 
-    // Step 3 & 4: Send login credentials to backend, receive signed JWT, store in session
+    // Save the authenticated Firebase user in your existing AuthContext.
+    const saveUserSession = async (user) => {
+        const userRef = doc(db, "users", user.uid);
+        const userSnapshot = await getDoc(userRef);
+
+        let userData;
+
+        if (!userSnapshot.exists()) {
+            userData = {
+                uid: user.uid,
+                name: user.displayName || user.email || "",
+                email: user.email || "",
+                photoURL: user.photoURL || "",
+                plan: "free",
+                createdAt: serverTimestamp(),
+            };
+
+            await setDoc(userRef, userData);
+        } else {
+            userData = userSnapshot.data();
+        }
+
+        const userSession = {
+            id: user.uid,
+            uid: user.uid,
+            name:
+                userData.name ||
+                user.displayName ||
+                user.email ||
+                "",
+            email: user.email || "",
+            photoURL: userData.photoURL || user.photoURL || "",
+            plan: userData.plan || "free",
+        };
+
+        // Firebase ID token, not a backend-generated JWT.
+        const token = await user.getIdToken();
+
+        // Keep using your existing AuthContext login function.
+        login(token, userSession);
+
+        return userSession;
+    };
+
+    // Email and password login through Firebase Authentication.
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError("");
         setLoading(true);
 
         try {
-            const response = await fetch(`${API_BASE_URL}/login`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    email: email.trim().toLowerCase(),
-                    password
-                })
-            });
+            const userCredential = await signInWithEmailAndPassword(
+                auth,
+                email.trim().toLowerCase(),
+                password
+            );
 
-            const data = await response.json();
+            await saveUserSession(userCredential.user);
 
-            if (!response.ok || !data.success) {
-                setError(data.message || "Invalid email or password.");
-                setLoading(false);
-                return;
-            }
-
-            // Save signed JWT and user details in AuthContext & localStorage
-            login(data.token, data.user);
-
-            // Navigate to home page
             navigate("/");
         } catch (err) {
-            console.error("Backend login request failed:", err);
-            setError("Could not connect to the authentication server. Please ensure the backend is running on port 3000.");
+            console.error("Email login error:", err);
+
+            switch (err.code) {
+                case "auth/invalid-credential":
+                case "auth/wrong-password":
+                case "auth/user-not-found":
+                    setError("Invalid email or password.");
+                    break;
+
+                case "auth/invalid-email":
+                    setError("Please enter a valid email address.");
+                    break;
+
+                case "auth/too-many-requests":
+                    setError(
+                        "Too many unsuccessful attempts. Please try again later."
+                    );
+                    break;
+
+                case "auth/operation-not-allowed":
+                    setError(
+                        "Email/password login is disabled in Firebase Authentication settings."
+                    );
+                    break;
+
+                default:
+                    setError(
+                        err.message ||
+                        "Login failed. Please try again."
+                    );
+            }
         } finally {
             setLoading(false);
         }
     };
 
-    // Google Sign-In fallback
+    // Google sign-in through Firebase Authentication.
     const handleGoogleSignIn = async () => {
         setError("");
         setLoading(true);
 
         try {
             const result = await signInWithPopup(auth, googleProvider);
-            const user = result.user;
 
-            const userRef = doc(db, "users", user.uid);
-            const userData = await getDoc(userRef);
-
-            if (!userData.exists()) {
-                await setDoc(userRef, {
-                    name: user.displayName || "",
-                    email: user.email,
-                    photoURL: user.photoURL || "",
-                    createdAt: new Date().toISOString()
-                });
-            }
-
-            // Generate client session
-            const userSession = {
-                id: user.uid,
-                name: user.displayName || user.email,
-                email: user.email,
-                photoURL: user.photoURL || ""
-            };
-
-            // Use Google token or mock JWT token
-            const token = await user.getIdToken();
-            login(token, userSession);
+            await saveUserSession(result.user);
 
             navigate("/");
         } catch (err) {
             console.error("Google sign-in error:", err);
+
             if (err.code === "auth/popup-blocked") {
-                setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
+                setError(
+                    "Your browser blocked the sign-in popup. Allow popups and try again."
+                );
             } else if (err.code === "auth/popup-closed-by-user") {
-                setError("Sign-in popup was closed before completing.");
+                setError("The sign-in popup was closed before completion.");
+            } else if (err.code === "auth/unauthorized-domain") {
+                setError(
+                    "This website domain is not authorized in Firebase. Add your deployed domain in Firebase Authentication settings."
+                );
             } else {
-                setError(err.message || "Google sign-in failed. Please try again.");
+                setError(
+                    err.message || "Google sign-in failed. Please try again."
+                );
             }
         } finally {
             setLoading(false);
@@ -114,21 +166,18 @@ function Login() {
                     </Link>
                 </div>
 
-                {/* Success message passed from previous navigation */}
                 {message && (
                     <div className="auth-alert success-alert">
                         {message}
                     </div>
                 )}
 
-                {/* Error message alert displayed to user */}
                 {error && (
-                    <div className="auth-alert error-alert">
+                    <div className="auth-alert error-alert" role="alert">
                         {error}
                     </div>
                 )}
 
-                {/* Email and password login form */}
                 <form onSubmit={handleSubmit} className="auth-form">
                     <div className="form-group">
                         <label htmlFor="login-email">Your email</label>
